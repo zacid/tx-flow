@@ -1,0 +1,822 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bitcoin Mempool — Live Visualiser</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;900&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --black:   #080808;
+      --white:   #F4F4F2;
+      --orange:  #F7931A;
+      --green:   #00FF87;
+      --g1:      #111111;
+      --g3:      #282828;
+      --g4:      #404040;
+      --g5:      #888888;
+      --border:  rgba(255,255,255,.06);
+      --oborder: rgba(247,147,26,.15);
+    }
+    html, body { height: 100%; }
+    body {
+      background: var(--black);
+      color: var(--white);
+      font-family: 'DM Mono', 'Courier New', monospace;
+      -webkit-font-smoothing: antialiased;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 2rem;
+      cursor: none;
+    }
+    body::after {
+      content:''; position:fixed; inset:0; pointer-events:none; z-index:0;
+      background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.03'/%3E%3C/svg%3E");
+    }
+
+    /* ── Custom cursor ── */
+    #cur  { position:fixed;width:7px;height:7px;background:var(--orange);border-radius:50%;pointer-events:none;z-index:9999;transform:translate(-50%,-50%);transition:transform .15s ease; }
+    #curR { position:fixed;width:30px;height:30px;border:1px solid rgba(247,147,26,.4);border-radius:50%;pointer-events:none;z-index:9998;transform:translate(-50%,-50%);transition:width .2s,height .2s,opacity .2s; }
+    body.cur-hover #cur  { transform:translate(-50%,-50%) scale(2.5); }
+    body.cur-hover #curR { width:44px;height:44px;opacity:.3; }
+
+    .wrap { width:100%; max-width:1100px; position:relative; z-index:1; }
+
+    /* ── Header ── */
+    .header { display:flex; align-items:center; justify-content:space-between; margin-bottom:1.25rem; }
+    .title-block { display:flex; align-items:center; gap:.75rem; }
+    .logo-mark {
+      width:28px; height:28px; background:var(--orange);
+      border-radius:6px; display:flex; align-items:center;
+      justify-content:center; font-size:15px; flex-shrink:0;
+      box-shadow: 0 0 16px rgba(247,147,26,.4);
+    }
+    .title    { font-family:'Orbitron',sans-serif; font-size:.8rem; font-weight:700; letter-spacing:.08em; color:var(--white); }
+    .subtitle { font-size:.6rem; color:var(--g5); letter-spacing:.06em; text-transform:uppercase; margin-top:.2rem; }
+
+    .header-right { display:flex; align-items:center; gap:.75rem; }
+    .ws-dot {
+      width:7px; height:7px; border-radius:50%; background:#333;
+      transition:background .3s, box-shadow .3s;
+      flex-shrink:0;
+    }
+    .ws-dot.connected    { background:var(--green); box-shadow:0 0 8px rgba(0,255,135,.6); }
+    .ws-dot.connecting   { background:#FFB347; box-shadow:0 0 8px rgba(255,179,71,.5); animation:blink 1s infinite; }
+    .ws-dot.disconnected { background:#ff5555; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    .ws-label { font-size:.55rem; color:#444; letter-spacing:.06em; }
+    .badge {
+      font-family:'Orbitron',sans-serif; font-size:.45rem; font-weight:700;
+      letter-spacing:.1em; text-transform:uppercase;
+      padding:.3rem .75rem; border:1px solid rgba(247,147,26,.3);
+      border-radius:4px; color:var(--orange); background:rgba(247,147,26,.06);
+    }
+
+    /* ── Canvas ── */
+    .canvas-wrap { position:relative; border:1px solid var(--border); border-radius:12px; overflow:hidden; }
+    #mempoolCanvas { width:100%; height:520px; display:block; }
+
+    /* ── Stats bar ── */
+    .stats-bar {
+      display:grid; grid-template-columns:repeat(6,1fr);
+      border:1px solid var(--border); border-top:none;
+      border-radius:0 0 12px 12px; overflow:hidden;
+    }
+    .stat { padding:.875rem 1rem; border-right:1px solid var(--border); }
+    .stat:last-child { border-right:none; }
+    .stat-val { font-family:'Orbitron',sans-serif; font-size:1.1rem; font-weight:700; letter-spacing:.02em; line-height:1; margin-bottom:.25rem; color:var(--orange); }
+    .stat-val.green { color:var(--green); }
+    .stat-val.dim   { color:#555; font-size:.75rem; margin-top:.15rem; }
+    .stat-lbl { font-size:.5rem; color:var(--g5); text-transform:uppercase; letter-spacing:.1em; }
+
+    /* ── Block flash overlay ── */
+    #blockFlash {
+      position:absolute; inset:0; pointer-events:none;
+      background:radial-gradient(ellipse at center, rgba(247,147,26,.18) 0%, transparent 70%);
+      opacity:0; transition:opacity .1s;
+      border-radius:12px;
+    }
+
+    /* ── Info bar ── */
+    .info-bar {
+      height:38px; border-top:1px solid var(--border);
+      display:flex; align-items:center; padding:0 1rem; gap:.875rem;
+      background:rgba(8,8,8,.97);
+      transition: opacity .25s, transform .25s;
+    }
+    .info-bar.empty { opacity:0; transform:translateY(4px); pointer-events:none; }
+    .info-dot  { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+    .info-name { font-family:'Orbitron',sans-serif; font-size:.6rem; font-weight:600; letter-spacing:.08em; white-space:nowrap; }
+    .info-sep  { color:#2a2a2a; font-size:.7rem; }
+    .info-sub  { font-size:.6rem; color:#555; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .info-clear { font-size:.65rem; color:#2a2a2a; cursor:pointer; transition:color .15s; margin-left:auto; }
+    .info-clear:hover { color:#777; }
+
+    ::-webkit-scrollbar { width:3px; }
+    ::-webkit-scrollbar-track { background:var(--black); }
+    ::-webkit-scrollbar-thumb { background:var(--g3); }
+  </style>
+</head>
+<body>
+<div id="cur"></div>
+<div id="curR"></div>
+
+<div class="wrap">
+  <div class="header">
+    <div class="title-block">
+      <div class="logo-mark">₿</div>
+      <div>
+        <div class="title">BITCOIN MEMPOOL — LIVE NETWORK VISUALISER</div>
+        <div class="subtitle">mempool.space · real-time WebSocket · unconfirmed transactions</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="ws-dot connecting" id="wsDot"></div>
+      <span class="ws-label" id="wsLabel">connecting…</span>
+      <div class="badge">MAINNET</div>
+    </div>
+  </div>
+
+  <div class="canvas-wrap">
+    <canvas id="mempoolCanvas"></canvas>
+    <div id="blockFlash"></div>
+    <div class="info-bar empty" id="infoBar">
+      <div class="info-dot" id="infoDot"></div>
+      <span class="info-name" id="infoName"></span>
+      <span class="info-sep">·</span>
+      <span class="info-sub"  id="infoSub"></span>
+      <span class="info-clear" id="infoClear">✕</span>
+    </div>
+  </div>
+
+  <div class="stats-bar">
+    <div class="stat">
+      <div class="stat-val" id="sMempoolSize">—</div>
+      <div class="stat-lbl">Mempool (MB)</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val" id="sTxCount">—</div>
+      <div class="stat-lbl">Unconfirmed txs</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val green" id="sFeeLow">—</div>
+      <div class="stat-lbl">Low fee (sat/vB)</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val" id="sFeeMed">—</div>
+      <div class="stat-lbl">Med fee (sat/vB)</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val" id="sFeeHigh">—</div>
+      <div class="stat-lbl">High fee (sat/vB)</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val" id="sLastBlock">—</div>
+      <div class="stat-lbl">Last block</div>
+      <div class="stat-val dim" id="sBlockMiner">—</div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ══════════════════════════════════════════════
+   CURSOR
+══════════════════════════════════════════════ */
+const CUR=document.getElementById('cur'), RING=document.getElementById('curR');
+let cmx=0,cmy=0,crx=0,cry=0;
+document.addEventListener('mousemove',e=>{cmx=e.clientX;cmy=e.clientY;CUR.style.left=cmx+'px';CUR.style.top=cmy+'px';});
+(function loop(){crx+=(cmx-crx)*.12;cry+=(cmy-cry)*.12;RING.style.left=crx+'px';RING.style.top=cry+'px';requestAnimationFrame(loop);})();
+
+/* ══════════════════════════════════════════════
+   CANVAS SETUP
+══════════════════════════════════════════════ */
+const canvas = document.getElementById('mempoolCanvas');
+const ctx    = canvas.getContext('2d');
+const DPR    = window.devicePixelRatio || 1;
+
+/* ══════════════════════════════════════════════
+   COLOURS
+══════════════════════════════════════════════ */
+const COL = {
+  mempool:  '#F7931A',  // Bitcoin orange — the heart
+  source:   '#FFD700',  // gold — origin nodes
+  miner:    '#00BFFF',  // blue — mining pools
+  fee:      '#00FF87',  // green — fee tiers
+  block:    '#A78BFA',  // purple — confirmed blocks
+  offline:  '#2A2A2A',
+};
+
+const FLOW = {
+  broadcast: {r:255,g:215,b:0  },  // gold — new tx broadcast
+  fee_low:   {r:0,  g:255,b:135},  // green
+  fee_med:   {r:255,g:179,b:71 },  // amber
+  fee_high:  {r:255,g:100,b:100},  // red
+  fee_pri:   {r:255,g:50, b:50 },  // bright red
+  mined:     {r:0,  g:191,b:255},  // blue — tx picked by miner
+  confirm:   {r:167,g:139,b:250},  // purple — confirmed
+};
+
+const NODE_RGB = {
+  mempool: {r:247,g:147,b:26 },
+  source:  {r:255,g:215,b:0  },
+  miner:   {r:0,  g:191,b:255},
+  fee:     {r:0,  g:255,b:135},
+  block:   {r:167,g:139,b:250},
+};
+
+function fc(t,a){ const c=FLOW[t]||FLOW.broadcast; return `rgba(${c.r},${c.g},${c.b},${a})`; }
+
+/* ══════════════════════════════════════════════
+   NODE DEFINITIONS
+══════════════════════════════════════════════ */
+const PAD = {top:14, side:14, gapY:11};
+const LAYER_H_FRAC = [0.175, 0.245, 0.245, 0.175];
+const LAYER_SLOTS  = [5, 6, 6, 5];
+
+const NODE_DEF = [
+  // Layer 0 — Sources (where txs originate)
+  {id:0, layer:0,slot:0,k:'source', lbl:'Exchanges',    sub:'Binance · Coinbase · Kraken · high-volume batched txs',        r:7},
+  {id:1, layer:0,slot:1,k:'source', lbl:'Wallets',      sub:'self-custody · hardware wallets · mobile · web',               r:7},
+  {id:2, layer:0,slot:2,k:'source', lbl:'Lightning',    sub:'channel opens/closes · force-closes · HTLC settlements',       r:7},
+  {id:3, layer:0,slot:3,k:'source', lbl:'DeFi / Ord.',  sub:'Ordinals inscriptions · BRC-20 · Runes · protocol txs',        r:7},
+  {id:4, layer:0,slot:4,k:'source', lbl:'Node Relay',   sub:'full nodes · peer broadcast · p2p propagation',                r:7},
+
+  // Layer 1 — Mempool + Fee tiers
+  {id:5,  layer:1,slot:0,k:'mempool',lbl:'Mempool',     sub:'unconfirmed tx pool · UTXO validation · RBF tracking',         r:14},
+  {id:6,  layer:1,slot:1,k:'fee',    lbl:'Low Fee',     sub:'1–5 sat/vB · low priority · may wait hours or days',           r:9},
+  {id:7,  layer:1,slot:2,k:'fee',    lbl:'Med Fee',     sub:'6–20 sat/vB · next few blocks · standard confirmation',        r:9},
+  {id:8,  layer:1,slot:3,k:'fee',    lbl:'High Fee',    sub:'21–100 sat/vB · next block target · time-sensitive',           r:9},
+  {id:9,  layer:1,slot:4,k:'fee',    lbl:'Priority',    sub:'100+ sat/vB · next block guaranteed · congestion premium',     r:9},
+  {id:10, layer:1,slot:5,k:'fee',    lbl:'Replace-by-Fee',sub:'RBF bumps · fee acceleration · CPFP child pays',             r:9},
+
+  // Layer 2 — Mining pools
+  {id:11,layer:2,slot:0,k:'miner',  lbl:'Foundry USA',  sub:'~30% hashrate · US-based · largest pool globally',            r:8,on:true},
+  {id:12,layer:2,slot:1,k:'miner',  lbl:'AntPool',      sub:'~20% hashrate · Bitmain · Asia-Pacific',                      r:8,on:true},
+  {id:13,layer:2,slot:2,k:'miner',  lbl:'F2Pool',       sub:'~10% hashrate · multi-currency · global nodes',               r:8,on:true},
+  {id:14,layer:2,slot:3,k:'miner',  lbl:'ViaBTC',       sub:'~8% hashrate · solo mining option · PPLNS',                   r:8,on:true},
+  {id:15,layer:2,slot:4,k:'miner',  lbl:'Binance Pool', sub:'~6% hashrate · exchange-integrated · BNB rewards',            r:8,on:true},
+  {id:16,layer:2,slot:5,k:'miner',  lbl:'Unknown',      sub:'solo miners · small pools · stealth mining',                  r:8,on:true},
+
+  // Layer 3 — Blockchain
+  {id:17,layer:3,slot:0,k:'block',  lbl:'Pending Block', sub:'candidate block · template · coinbase tx · merkle root',     r:8},
+  {id:18,layer:3,slot:1,k:'block',  lbl:'Confirmed',     sub:'6+ confirmations · final settlement · UTXO set update',      r:8},
+  {id:19,layer:3,slot:2,k:'block',  lbl:'Block Reward',  sub:'3.125 BTC subsidy · post-halving · + fees',                  r:8},
+  {id:20,layer:3,slot:3,k:'block',  lbl:'Orphaned',      sub:'stale blocks · chain reorg · uncle blocks discarded',        r:8},
+  {id:21,layer:3,slot:4,k:'block',  lbl:'UTXO Set',      sub:'unspent outputs · full node validation · chainstate DB',     r:8},
+];
+
+const EDGES = [
+  // Sources → Mempool
+  [0,5,'broadcast','fwd'],[1,5,'broadcast','fwd'],[2,5,'broadcast','fwd'],
+  [3,5,'broadcast','fwd'],[4,5,'broadcast','fwd'],
+
+  // Mempool → Fee tiers
+  [5,6,'fee_low','fwd'],[5,7,'fee_med','fwd'],[5,8,'fee_high','fwd'],
+  [5,9,'fee_pri','fwd'],[5,10,'fee_med','bi'],
+
+  // Fee tiers → Miners (miners pick highest fees first)
+  [9,11,'mined','fwd'],[9,12,'mined','fwd'],
+  [8,11,'mined','fwd'],[8,12,'mined','fwd'],[8,13,'mined','fwd'],
+  [7,13,'mined','fwd'],[7,14,'mined','fwd'],[7,15,'mined','fwd'],
+  [6,15,'mined','fwd'],[6,16,'mined','fwd'],
+  [10,11,'mined','fwd'],[10,12,'mined','fwd'],
+
+  // Miners → Pending block
+  [11,17,'confirm','fwd'],[12,17,'confirm','fwd'],[13,17,'confirm','fwd'],
+  [14,17,'confirm','fwd'],[15,17,'confirm','fwd'],[16,17,'confirm','fwd'],
+
+  // Pending → Confirmed / Orphaned
+  [17,18,'confirm','fwd'],
+  [17,20,'confirm','fwd'],
+
+  // Confirmed → UTXO / Reward
+  [18,21,'confirm','fwd'],
+  [17,19,'confirm','fwd'],
+];
+
+const GROUPS = [
+  {layer:0,label:'TRANSACTION SOURCES',  col:'255,215,0',   fillA:0.03,strokeA:0.18},
+  {layer:1,label:'MEMPOOL & FEE MARKET', col:'247,147,26',  fillA:0.05,strokeA:0.25},
+  {layer:2,label:'MINING POOLS',         col:'0,191,255',   fillA:0.03,strokeA:0.15},
+  {layer:3,label:'BLOCKCHAIN',           col:'167,139,250', fillA:0.04,strokeA:0.18},
+];
+
+function nodeCol(n){
+  if(n.k==='mempool') return COL.mempool;
+  if(n.k==='source')  return COL.source;
+  if(n.k==='miner')   return COL.miner;
+  if(n.k==='fee')     return COL.fee;
+  if(n.k==='block')   return COL.block;
+  return COL.offline;
+}
+
+/* ══════════════════════════════════════════════
+   STATE
+══════════════════════════════════════════════ */
+let W,H,nodes=[],layerMeta=[];
+let hov=null, sel=null;
+const parts=[];
+
+// Live data state
+let liveData = {
+  mempoolMB: 0,
+  txCount: 0,
+  feeLow: 0,
+  feeMed: 0,
+  feeHigh: 0,
+  lastBlockHeight: 0,
+  lastBlockMiner: '—',
+  lastBlockTime: null,
+  congestion: 0, // 0-1
+};
+
+// Per-node activity level (drives pulse rate + brightness)
+const nodeActivity = new Array(NODE_DEF.length).fill(0);
+
+/* ══════════════════════════════════════════════
+   WEBSOCKET — mempool.space
+══════════════════════════════════════════════ */
+const wsDot   = document.getElementById('wsDot');
+const wsLabel = document.getElementById('wsLabel');
+let ws, wsRetryTimer;
+
+function connectWS() {
+  wsDot.className='ws-dot connecting'; wsLabel.textContent='connecting…';
+  try {
+    ws = new WebSocket('wss://mempool.space/api/v1/ws');
+  } catch(e) { scheduleReconnect(); return; }
+
+  ws.addEventListener('open', () => {
+    wsDot.className='ws-dot connected'; wsLabel.textContent='live';
+    ws.send(JSON.stringify({action:'want', data:['blocks','mempool-blocks','stats']}));
+  });
+
+  ws.addEventListener('message', e => {
+    try { handleWsMessage(JSON.parse(e.data)); } catch(_) {}
+  });
+
+  ws.addEventListener('close', () => {
+    wsDot.className='ws-dot disconnected'; wsLabel.textContent='disconnected';
+    scheduleReconnect();
+  });
+
+  ws.addEventListener('error', () => {
+    wsDot.className='ws-dot disconnected'; wsLabel.textContent='error';
+  });
+}
+
+function scheduleReconnect() {
+  clearTimeout(wsRetryTimer);
+  wsRetryTimer = setTimeout(connectWS, 5000);
+}
+
+function handleWsMessage(data) {
+  /* ── mempool stats ── */
+  if (data.mempoolInfo) {
+    const info = data.mempoolInfo;
+    liveData.mempoolMB = (info.usage / 1e6).toFixed(1);
+    liveData.txCount   = info.size.toLocaleString();
+    liveData.congestion = Math.min(info.usage / 3e8, 1); // 300MB = max congestion
+    document.getElementById('sMempoolSize').textContent = liveData.mempoolMB;
+    document.getElementById('sTxCount').textContent     = liveData.txCount;
+
+    // pulse mempool node proportional to congestion
+    nodeActivity[5] = 0.3 + liveData.congestion * 0.7;
+
+    // spawn ambient particles based on how full mempool is
+    const extra = Math.floor(liveData.congestion * 4);
+    for(let i=0;i<extra;i++) spawnFromSources();
+  }
+
+  /* ── fee estimates from mempool-blocks ── */
+  if (data['mempool-blocks'] && data['mempool-blocks'].length > 0) {
+    const blocks = data['mempool-blocks'];
+    const b0 = blocks[0];
+    // fee ranges within the first projected block
+    if (b0.feeRange && b0.feeRange.length >= 2) {
+      liveData.feeHigh = Math.round(b0.feeRange[b0.feeRange.length-1]);
+      liveData.feeLow  = Math.round(b0.feeRange[0]);
+      liveData.feeMed  = Math.round(b0.medianFee || (liveData.feeLow + liveData.feeHigh) / 2);
+    }
+    document.getElementById('sFeeLow').textContent  = liveData.feeLow  || '—';
+    document.getElementById('sFeeMed').textContent  = liveData.feeMed  || '—';
+    document.getElementById('sFeeHigh').textContent = liveData.feeHigh || '—';
+
+    // light up fee nodes proportionally
+    nodeActivity[6] = liveData.feeLow  > 0 ? Math.min(liveData.feeLow  / 10, 1) : 0.1;
+    nodeActivity[7] = liveData.feeMed  > 0 ? Math.min(liveData.feeMed  / 30, 1) : 0.1;
+    nodeActivity[8] = liveData.feeHigh > 0 ? Math.min(liveData.feeHigh / 80, 1) : 0.1;
+    nodeActivity[9] = liveData.feeHigh > 100 ? 1 : liveData.feeHigh / 100;
+
+    // spawn fee-tier particles
+    spawnFeeParticles(blocks.length);
+  }
+
+  /* ── new block found ── */
+  if (data.block) {
+    const blk = data.block;
+    liveData.lastBlockHeight = blk.height;
+    liveData.lastBlockMiner  = blk.extras?.pool?.name || 'Unknown';
+    liveData.lastBlockTime   = new Date();
+
+    document.getElementById('sLastBlock').textContent  = '#' + blk.height.toLocaleString();
+    document.getElementById('sBlockMiner').textContent = liveData.lastBlockMiner;
+
+    // big flash event
+    triggerBlockFound(liveData.lastBlockMiner);
+  }
+}
+
+/* ══════════════════════════════════════════════
+   PARTICLE SPAWNING
+══════════════════════════════════════════════ */
+function spawnParticle(from, to, type, hot=false) {
+  parts.push({from, to, t:0, speed:0.004+Math.random()*0.006, type, hot});
+}
+
+function spawnFromSources() {
+  // random source → mempool
+  const srcId = Math.floor(Math.random()*5);
+  spawnParticle(srcId, 5, 'broadcast');
+}
+
+function spawnFeeParticles(blockCount) {
+  // mempool → fee tiers based on congestion
+  const types = ['fee_low','fee_med','fee_high','fee_pri'];
+  const feeNodes = [6,7,8,9];
+  const count = Math.min(blockCount + 1, 4);
+  for(let i=0;i<count;i++) {
+    const idx = Math.floor(Math.random()*feeNodes.length);
+    spawnParticle(5, feeNodes[idx], types[idx]);
+  }
+  // fee tiers → miners
+  for(let i=0;i<2;i++) {
+    const feeNode = feeNodes[Math.floor(Math.random()*feeNodes.length)];
+    const minerNode = 11 + Math.floor(Math.random()*6);
+    const t = feeNode===9?'fee_pri':feeNode===8?'fee_high':feeNode===7?'fee_med':'fee_low';
+    spawnParticle(feeNode, minerNode, t);
+  }
+}
+
+function triggerBlockFound(minerName) {
+  // find which miner node matches
+  const minerLabels = ['Foundry USA','AntPool','F2Pool','ViaBTC','Binance Pool','Unknown'];
+  const idx = minerLabels.findIndex(l => minerName && minerName.toLowerCase().includes(l.split(' ')[0].toLowerCase()));
+  const minerNodeId = idx >= 0 ? 11+idx : 16;
+
+  // light up that miner strongly
+  nodeActivity[minerNodeId] = 1;
+  setTimeout(()=>{ nodeActivity[minerNodeId] = 0.3; }, 3000);
+
+  // burst: miners → pending block → confirmed
+  for(let i=0;i<12;i++) {
+    setTimeout(()=>{
+      spawnParticle(minerNodeId, 17, 'confirm', true);
+    }, i*80);
+  }
+  for(let i=0;i<8;i++) {
+    setTimeout(()=>{
+      spawnParticle(17, 18, 'confirm', true);
+      spawnParticle(17, 19, 'confirm', true);
+    }, 600 + i*100);
+  }
+  for(let i=0;i<6;i++) {
+    setTimeout(()=>{
+      spawnParticle(18, 21, 'confirm', true);
+    }, 1400 + i*120);
+  }
+
+  // orange flash
+  const flash = document.getElementById('blockFlash');
+  flash.style.opacity='1';
+  setTimeout(()=>{ flash.style.opacity='0'; }, 800);
+
+  // mempool drains a little
+  nodeActivity[5] = Math.max(nodeActivity[5] - 0.3, 0.1);
+}
+
+/* ── Ambient spawning ── */
+setInterval(()=>{
+  spawnFromSources();
+  // some fee → miner ambient flow
+  if(Math.random()>0.4){
+    const feeNode = 6+Math.floor(Math.random()*4);
+    const miner   = 11+Math.floor(Math.random()*6);
+    const t = feeNode===9?'fee_pri':feeNode===8?'fee_high':feeNode===7?'fee_med':'fee_low';
+    spawnParticle(feeNode, miner, t);
+  }
+  if(Math.random()>0.6){
+    const miner=11+Math.floor(Math.random()*6);
+    spawnParticle(miner,17,'confirm');
+  }
+}, 400);
+
+/* ══════════════════════════════════════════════
+   RESIZE
+══════════════════════════════════════════════ */
+function resizeCanvas(){
+  const rect=canvas.getBoundingClientRect();
+  W=rect.width; H=rect.height;
+  canvas.width=W*DPR; canvas.height=H*DPR;
+  ctx.setTransform(1,0,0,1,0,0); ctx.scale(DPR,DPR);
+  const totalGaps=PAD.gapY*(LAYER_H_FRAC.length-1);
+  const availH=H-PAD.top*2-totalGaps;
+  let y=PAD.top;
+  layerMeta=LAYER_H_FRAC.map(frac=>{
+    const h=availH*frac; const m={y,h,cy:y+h/2}; y+=h+PAD.gapY; return m;
+  });
+  nodes=NODE_DEF.map(n=>{
+    const lm=layerMeta[n.layer];
+    const slots=LAYER_SLOTS[n.layer];
+    const step=(W-PAD.side*2)/slots;
+    return{...n,x:PAD.side+step*n.slot+step/2,y:lm.cy,col:nodeCol(n),pulse:Math.random()*Math.PI*2};
+  });
+}
+resizeCanvas();
+window.addEventListener('resize',resizeCanvas);
+
+/* ══════════════════════════════════════════════
+   HOVER / CLICK
+══════════════════════════════════════════════ */
+const infoBar  = document.getElementById('infoBar');
+const infoDot  = document.getElementById('infoDot');
+const infoName = document.getElementById('infoName');
+const infoSub  = document.getElementById('infoSub');
+const infoClear= document.getElementById('infoClear');
+
+canvas.addEventListener('mousemove',e=>{
+  const r=canvas.getBoundingClientRect();
+  const mx=e.clientX-r.left,my=e.clientY-r.top;
+  hov=null;
+  nodes.forEach(n=>{ if(Math.hypot(mx-n.x,my-n.y)<n.r+10) hov=n; });
+  document.body.classList.toggle('cur-hover',!!hov);
+});
+canvas.addEventListener('mouseleave',()=>{ hov=null; document.body.classList.remove('cur-hover'); });
+
+canvas.addEventListener('click',e=>{
+  const r=canvas.getBoundingClientRect();
+  const mx=e.clientX-r.left,my=e.clientY-r.top;
+  let hit=null;
+  nodes.forEach(n=>{ if(Math.hypot(mx-n.x,my-n.y)<n.r+12) hit=n; });
+  if(hit){
+    sel=hit;
+    infoDot.style.background=hit.col;
+    infoName.textContent=hit.lbl.toUpperCase();
+    infoName.style.color=hit.col;
+    infoSub.textContent=hit.sub;
+    infoBar.classList.remove('empty');
+    // burst traffic from this node
+    burstFromNode(hit,8);
+  } else {
+    sel=null; infoBar.classList.add('empty');
+  }
+});
+infoClear.addEventListener('click',()=>{ sel=null; infoBar.classList.add('empty'); });
+
+function burstFromNode(n, count){
+  const edges=EDGES.filter(([a,b])=>a===n.id||b===n.id);
+  if(!edges.length) return;
+  for(let i=0;i<count;i++){
+    const e=edges[Math.floor(Math.random()*edges.length)];
+    const [a,b,type,dir]=e;
+    let from=a,to=b;
+    if(b===n.id){from=b;to=a;}
+    if(dir==='bi'&&Math.random()>.4){const tmp=from;from=to;to=tmp;}
+    parts.push({from,to,t:0,speed:0.008+Math.random()*0.009,type,hot:true});
+  }
+}
+
+/* ══════════════════════════════════════════════
+   HELPERS
+══════════════════════════════════════════════ */
+function rrect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();
+}
+
+function getNodeEdges(id){ return EDGES.filter(([a,b])=>a===id||b===id); }
+function isSelEdge(a,b){ return sel&&(a===sel.id||b===sel.id); }
+
+/* ══════════════════════════════════════════════
+   DRAW
+══════════════════════════════════════════════ */
+function drawGroups(){
+  GROUPS.forEach(g=>{
+    const lm=layerMeta[g.layer]; if(!lm) return;
+    const active=sel&&sel.layer===g.layer;
+    const x=PAD.side/2,y=lm.y-6,w=W-PAD.side,h=lm.h+12,rx=8;
+    rrect(x,y,w,h,rx);
+    ctx.fillStyle=`rgba(${g.col},${active?g.fillA*3:g.fillA})`; ctx.fill();
+    rrect(x,y,w,h,rx);
+    ctx.strokeStyle=`rgba(${g.col},${active?g.strokeA*2.5:g.strokeA})`;
+    ctx.lineWidth=active?1.5:1; ctx.stroke();
+    ctx.font='500 6.5px "Orbitron",sans-serif';
+    ctx.fillStyle=`rgba(${g.col},${active?.85:.5})`;
+    ctx.textAlign='left'; ctx.fillText(g.label,x+9,y+11);
+  });
+}
+
+function drawLegend(){
+  const flows=[
+    {c:FLOW.broadcast,l:'broadcast'},{c:FLOW.fee_low,l:'low fee'},
+    {c:FLOW.fee_high,l:'high fee'},{c:FLOW.mined,l:'miner pickup'},
+    {c:FLOW.confirm,l:'confirmation'},
+  ];
+  ctx.font='300 6.5px "DM Mono",monospace';
+  const itemW=86,totalW=flows.length*itemW;
+  const x0=W/2-totalW/2;
+  flows.forEach((f,i)=>{
+    const x=x0+i*itemW,y=H-6;
+    ctx.beginPath();ctx.moveTo(x,y-4);ctx.lineTo(x+12,y-4);
+    ctx.strokeStyle=`rgba(${f.c.r},${f.c.g},${f.c.b},.8)`;
+    ctx.lineWidth=1.5;ctx.stroke();
+    ctx.fillStyle='#444';ctx.textAlign='left';ctx.fillText(f.l,x+15,y);
+  });
+}
+
+function drawCanvas(){
+  ctx.clearRect(0,0,W,H);
+  drawGroups();
+
+  if(sel){ctx.fillStyle='rgba(8,8,8,.4)';ctx.fillRect(0,0,W,H);}
+
+  /* ── Edges ── */
+  EDGES.forEach(([ai,bi,type])=>{
+    const na=nodes[ai],nb=nodes[bi]; if(!na||!nb) return;
+    const isBlock=na.k==='block'||nb.k==='block';
+    const active=isSelEdge(ai,bi);
+    let alpha=isBlock?0.05:0.09;
+    if(sel&&!active) alpha*=0.2;
+    if(active) alpha=0.55;
+    const lw=active?1.8:isBlock?0.5:0.75;
+    const g=ctx.createLinearGradient(na.x,na.y,nb.x,nb.y);
+    g.addColorStop(0,   fc(type,0));
+    g.addColorStop(0.35,fc(type,alpha));
+    g.addColorStop(0.65,fc(type,alpha));
+    g.addColorStop(1,   fc(type,0));
+    ctx.beginPath();ctx.moveTo(na.x,na.y);ctx.lineTo(nb.x,nb.y);
+    ctx.strokeStyle=g;ctx.lineWidth=lw;ctx.stroke();
+  });
+
+  /* ── Particles ── */
+  for(let i=parts.length-1;i>=0;i--){
+    const p=parts[i]; p.t+=p.speed;
+    if(p.t>=1){parts.splice(i,1);continue;}
+    const fn=nodes[p.from],tn=nodes[p.to];
+    if(!fn||!tn){parts.splice(i,1);continue;}
+    const x=fn.x+(tn.x-fn.x)*p.t;
+    const y=fn.y+(tn.y-fn.y)*p.t;
+    const c=FLOW[p.type]||FLOW.broadcast;
+    const size=p.hot?8:5;
+    const alpha=p.hot?0.8:0.45;
+    if(sel&&!p.hot) ctx.globalAlpha=0.15;
+    const gr=ctx.createRadialGradient(x,y,0,x,y,size);
+    gr.addColorStop(0,`rgba(${c.r},${c.g},${c.b},${alpha})`);
+    gr.addColorStop(1,'transparent');
+    ctx.beginPath();ctx.arc(x,y,size,0,Math.PI*2);ctx.fillStyle=gr;ctx.fill();
+    ctx.beginPath();ctx.arc(x,y,p.hot?2.5:1.6,0,Math.PI*2);
+    ctx.fillStyle=`rgb(${c.r},${c.g},${c.b})`;ctx.fill();
+    ctx.globalAlpha=1;
+  }
+
+  /* ── Nodes ── */
+  const t=Date.now()/1000;
+
+  nodes.forEach(n=>{
+    const isH=hov===n, isS=sel===n;
+    const isLit=sel&&!isS&&getNodeEdges(n.id).some(([a,b])=>a===sel.id||b===sel.id);
+    const dimmed=sel&&!isS&&!isLit;
+    const rgb=NODE_RGB[n.k]||{r:244,g:244,b:242};
+    const act=nodeActivity[n.id]||0; // 0-1 live activity
+
+    if(dimmed) ctx.globalAlpha=0.2;
+
+    /* pulse ring — faster when active */
+    const pulseSpeed=n.k==='mempool'?0.022+act*0.04:0.013+act*0.02;
+    n.pulse+=pulseSpeed;
+    const pulseAmt=n.k==='mempool'?(4+act*6):(2+act*3);
+    const pr=n.r+2+Math.sin(n.pulse)*pulseAmt;
+    ctx.beginPath();ctx.arc(n.x,n.y,pr,0,Math.PI*2);
+    ctx.strokeStyle=`rgba(${rgb.r},${rgb.g},${rgb.b},${0.1+act*0.2})`;
+    ctx.lineWidth=n.k==='mempool'?1.5:1;ctx.stroke();
+
+    /* selected rings */
+    if(isS){
+      [n.r+3+Math.sin(t*3.5)*3, n.r+9+Math.sin(t*2.4)*5, n.r+18+Math.sin(t*1.8)*6].forEach((rr,idx)=>{
+        ctx.beginPath();ctx.arc(n.x,n.y,rr,0,Math.PI*2);
+        ctx.strokeStyle=`rgba(${rgb.r},${rgb.g},${rgb.b},${0.55-idx*0.17})`;
+        ctx.lineWidth=1.5-idx*0.3;ctx.stroke();
+      });
+      const hg=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,n.r*5);
+      hg.addColorStop(0,`rgba(${rgb.r},${rgb.g},${rgb.b},.2)`);
+      hg.addColorStop(1,'transparent');
+      ctx.beginPath();ctx.arc(n.x,n.y,n.r*5,0,Math.PI*2);ctx.fillStyle=hg;ctx.fill();
+    }
+
+    /* activity glow — brighter when live data is high */
+    if(act>0.1&&!isS){
+      const ag=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,n.r*3);
+      ag.addColorStop(0,`rgba(${rgb.r},${rgb.g},${rgb.b},${act*0.18})`);
+      ag.addColorStop(1,'transparent');
+      ctx.beginPath();ctx.arc(n.x,n.y,n.r*3,0,Math.PI*2);ctx.fillStyle=ag;ctx.fill();
+    }
+
+    if(isLit&&!isS){
+      const lg=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,n.r*3);
+      lg.addColorStop(0,`rgba(${rgb.r},${rgb.g},${rgb.b},.14)`);
+      lg.addColorStop(1,'transparent');
+      ctx.beginPath();ctx.arc(n.x,n.y,n.r*3,0,Math.PI*2);ctx.fillStyle=lg;ctx.fill();
+    }
+
+    if(isH&&!isS){
+      const hg=ctx.createRadialGradient(n.x,n.y,0,n.x,n.y,n.r*3.5);
+      hg.addColorStop(0,`rgba(${rgb.r},${rgb.g},${rgb.b},.18)`);
+      hg.addColorStop(1,'transparent');
+      ctx.beginPath();ctx.arc(n.x,n.y,n.r*3.5,0,Math.PI*2);ctx.fillStyle=hg;ctx.fill();
+    }
+
+    /* shadow */
+    ctx.shadowBlur=0;
+    const sb=isS?32:act>0.5?20:n.k==='mempool'?24:10;
+    ctx.shadowBlur=sb;
+    ctx.shadowColor=`rgba(${rgb.r},${rgb.g},${rgb.b},${isS?.9:0.3+act*.4})`;
+
+    /* fill */
+    ctx.beginPath();ctx.arc(n.x,n.y,n.r,0,Math.PI*2);
+    ctx.fillStyle=n.k==='mempool'?COL.mempool:`rgba(${rgb.r},${rgb.g},${rgb.b},.08)`;
+    ctx.fill();ctx.shadowBlur=0;
+
+    /* stroke */
+    ctx.beginPath();ctx.arc(n.x,n.y,n.r,0,Math.PI*2);
+    ctx.strokeStyle=n.col;
+    ctx.lineWidth=isS?2.5:n.k==='mempool'?2:1.5;ctx.stroke();
+
+    /* mempool icon */
+    if(n.k==='mempool'){
+      ctx.font=`bold ${Math.round(n.r*1.1)}px sans-serif`;
+      ctx.fillStyle='#000';ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText('₿',n.x,n.y+0.5);ctx.textBaseline='alphabetic';
+    }
+
+    /* label */
+    const ly=n.y+n.r+11;
+    ctx.font=`${n.k==='mempool'?'500':'300'} ${n.k==='mempool'?10:8}px "DM Mono",monospace`;
+    ctx.fillStyle=(isH||isS||isLit||act>0.4)?'#F4F4F2':
+      n.k==='mempool'?'#FFBA5C':
+      n.k==='source' ?'#FFE566':
+      n.k==='fee'    ?'#88FFCC':
+      n.k==='miner'  ?'#6BDAFF':
+                      '#C4AEFF';
+    ctx.textAlign='center';
+    ctx.fillText(n.lbl,n.x,ly);
+
+    /* miner online dot */
+    if(n.k==='miner'){
+      const tw=ctx.measureText(n.lbl).width;
+      ctx.beginPath();ctx.arc(n.x-tw/2-5,ly-4,2.5,0,Math.PI*2);
+      ctx.fillStyle=act>0.5?COL.miner:'#00FF87';ctx.fill();
+    }
+
+    ctx.globalAlpha=1;
+  });
+
+  drawLegend();
+
+  /* ── Tooltip ── */
+  if(hov&&hov!==sel){
+    const n=hov;
+    const badge=n.k==='mempool'?'₿ mempool':n.k==='source'?'◆ source':n.k==='fee'?'◈ fee tier':n.k==='miner'?'⛏ miner':'▪ block';
+    const act=nodeActivity[n.id]||0;
+    const actStr=act>0?`  [activity ${Math.round(act*100)}%]`:'';
+    const lbl=`${badge}  ${n.lbl}  ·  ${n.sub}${actStr}`;
+    ctx.font='300 8px "DM Mono",monospace';
+    const tw=ctx.measureText(lbl).width+24;
+    const tx=Math.min(Math.max(n.x-tw/2,6),W-tw-6);
+    const above=n.layer<=1;
+    const ty=above?Math.max(n.y-n.r-30,6):Math.min(n.y+n.r+10,H-28);
+    ctx.fillStyle='rgba(8,8,8,.97)';ctx.strokeStyle='rgba(255,255,255,.1)';
+    ctx.lineWidth=1;rrect(tx,ty,tw,24,4);ctx.fill();ctx.stroke();
+    ctx.fillStyle=n.col;ctx.textAlign='left';ctx.fillText(lbl,tx+12,ty+15);
+  }
+
+  requestAnimationFrame(drawCanvas);
+}
+drawCanvas();
+
+/* ══════════════════════════════════════════════
+   CONNECT
+══════════════════════════════════════════════ */
+connectWS();
+</script>
+</body>
+</html>
